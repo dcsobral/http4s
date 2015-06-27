@@ -13,6 +13,7 @@ import org.http4s.util.CaseInsensitiveString
 import org.specs2.mutable.Specification
 import org.specs2.time.NoTimeConversions
 
+import scalaz.\/
 import scalaz.concurrent.Task
 
 import scala.concurrent.duration._
@@ -22,6 +23,12 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
   val service = HttpService {
     case r if r.pathInfo == "/" => Response(Ok).withBody("foo")
     case r => Response.notFound(r)
+  }
+
+  def nukeService(launchTheNukes: => Unit) = HttpService {
+    case r if r.pathInfo == "/launch-the-nukes" =>
+      launchTheNukes
+      Response(Gone).withBody("oops")
   }
 
   val realm = "Test Realm"
@@ -34,6 +41,27 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
   }
 
   val basic = new BasicAuthentication(realm, authStore)(service)
+
+  "Failure to authenticate" should {
+    "not run unauthorized routes" in {
+      var isNuked = false
+      val basic = new BasicAuthentication(realm, authStore)(nukeService { isNuked = true })
+      val req = Request(uri = Uri(path = "/launch-the-nukes"))
+      val res = basic(req).run
+      isNuked must_== false
+      res.get.status must_== Unauthorized
+    }
+
+    "fall through to default service" in {
+      var isNuked = false
+      val basic = (new BasicAuthentication(realm, authStore)(nukeService { isNuked = true }))
+      val composed = basic orElse HttpService { case _ => Task.now(Response(Ok)) }
+      val req = Request(uri = Uri(path = "/i-come-in-peace"))
+      val res = basic(req).run
+      isNuked must_== false
+      res.get.status must_== Ok
+    }
+  }
 
   "BasicAuthentication" should {
     "Respond to a request without authentication with 401" in {
