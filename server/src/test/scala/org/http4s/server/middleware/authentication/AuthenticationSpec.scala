@@ -26,9 +26,10 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
   }
 
   def nukeService(launchTheNukes: => Unit) = HttpService {
-    case r if r.pathInfo == "/launch-the-nukes" =>
-      launchTheNukes
-      Response(Gone).withBody("oops")
+    case r if r.pathInfo == "/launch-the-nukes" => for {
+      _ <- Task.delay(launchTheNukes)
+      r <- Response(Gone).withBody("oops")
+    } yield r
   }
 
   val realm = "Test Realm"
@@ -47,9 +48,9 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
       var isNuked = false
       val basic = new BasicAuthentication(realm, authStore)(nukeService { isNuked = true })
       val req = Request(uri = Uri(path = "/launch-the-nukes"))
-      val res = basic(req).run
+      val res = basic.or(req, Task.now(Response(NotFound))).run
       isNuked must_== false
-      res.get.status must_== Unauthorized
+      res must_== Unauthorized
     }
 
     "fall through to default service" in {
@@ -57,9 +58,9 @@ class AuthenticationSpec extends Specification with NoTimeConversions {
       val basic = (new BasicAuthentication(realm, authStore)(nukeService { isNuked = true }))
       val composed = basic orElse HttpService { case _ => Task.now(Response(Ok)) }
       val req = Request(uri = Uri(path = "/i-come-in-peace"))
-      val res = basic(req).run
+      val res = basic.or(req, Task.now(Response(NotFound))).run
       isNuked must_== false
-      res.get.status must_== Ok
+      res.status must_== NotFound
     }
   }
 
