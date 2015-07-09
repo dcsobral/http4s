@@ -17,8 +17,6 @@ import org.http4s.blaze.channel.nio1.NIO1SocketServerGroup
 import org.http4s.blaze.channel.nio2.NIO2SocketServerGroup
 import org.http4s.server.SSLSupport.{StoreInfo, SSLBits}
 
-import server.middleware.URITranslation
-
 import org.log4s.getLogger
 
 import scala.concurrent.duration._
@@ -69,20 +67,35 @@ class BlazeBuilder(
   def enableHttp2(enabled: Boolean): BlazeBuilder =
     copy(http2Support = enabled)
 
-  override def mountService(service: HttpService, prefix: String): BlazeBuilder =
-    copy(serviceMounts = serviceMounts :+ ServiceMount(service, prefix))
+  override def mountService(service: HttpService, prefix: String): BlazeBuilder = {
+    val prefixedService =
+                if (prefix.isEmpty || prefix == "/") service
+                else {
+                  val newCaret = prefix match {
+                    case "/"                    => 0
+                    case x if x.startsWith("/") => x.length
+                    case x                      => x.length + 1
+                  }
+
+                  service.contramap{ req: Request =>
+                    req.withAttribute(Request.Keys.PathInfoCaret(newCaret))
+                  }
+                }
+    copy(serviceMounts = serviceMounts :+ ServiceMount(prefixedService, prefix))
+  }
+
 
   def start: Task[Server] = Task.delay {
-    val aggregateService = serviceMounts.foldLeft[HttpService](Service.empty) {
-      case (aggregate, ServiceMount(service, prefix)) =>
-        val prefixedService =
-          if (prefix.isEmpty || prefix == "/") service
-          else URITranslation.translateRoot(prefix)(service)
+    val aggregateService = {
+      // order by number of '/' and then by last added (the sort is stable)
+      val mounts = serviceMounts.reverse.sortBy(-_.prefix.split("/").length)
 
-        if (aggregate.run eq Service.empty.run)
-          prefixedService
-        else
-          prefixedService orElse aggregate
+      Service.lift { req: Request =>
+        mounts.find { m => req.uri.path.startsWith(m.prefix) } match {
+          case Some(m) => m.service.run(req)
+          case None    => Task.now(None)
+        }
+      }
     }
 
     val pipelineFactory = getContext() match {
